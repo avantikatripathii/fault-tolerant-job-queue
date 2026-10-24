@@ -29,26 +29,26 @@ def main():
             done = int(r.get(STATS_DONE) or 0)
             dead = r.llen(DEAD_QUEUE)
 
-            # Pichle refresh se ab tak kitni jobs complete hui => jobs per second
+            # Jobs completed since the last refresh => jobs per second
             rate = (done - prev_done) / (now - prev_time)
             prev_done, prev_time = done, now
 
             lines = [
                 "===== JOB QUEUE MONITOR (Ctrl+C to stop) =====",
-                f"pending     : {pending}   (queue mein intezaar)",
-                f"processing  : {processing}   (worker kaam kar raha hai)",
-                f"delayed     : {delayed}   (retry ke wait mein)",
-                f"done        : {done}   (complete ho chuki)",
+                f"pending     : {pending}   (waiting in queue)",
+                f"processing  : {processing}   (being worked on)",
+                f"delayed     : {delayed}   (waiting to retry)",
+                f"done        : {done}   (completed)",
                 f"dead        : {dead}   (dead-letter queue)",
                 f"throughput  : {rate:.1f} jobs/sec",
                 "",
                 "Latest dead jobs:",
             ]
 
-            # LPUSH se daali thi, isliye sabse nayi job index 0 par hoti hai
+            # Jobs are added with LPUSH, so the newest one is at index 0
             recent_dead = r.lrange(DEAD_QUEUE, 0, 2)
             if not recent_dead:
-                lines.append("  (koi nahi)")
+                lines.append("  (none)")
             for raw in recent_dead:
                 job = json.loads(raw)
                 lines.append(
@@ -56,7 +56,7 @@ def main():
                     f"attempts={job['attempts']} error={job.get('last_error')}"
                 )
 
-            # \033[H\033[J = screen saaf karke upar se dobara print karo (live dashboard jaisa)
+            # \033[H\033[J clears the screen and redraws from the top (live dashboard effect)
             print("\033[H\033[J" + "\n".join(lines), flush=True)
     except KeyboardInterrupt:
         print("\n[monitor] stopped.")

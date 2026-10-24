@@ -10,21 +10,21 @@ from config import (
 )
 from jobs import fail_job, promote_due_jobs
 
-CHECK_INTERVAL = 2  # har kitne seconds mein check karna hai
+CHECK_INTERVAL = 2  # seconds between checks
 
 
 def reap_once(r) -> int:
-    """1) Timeout ho chuki jobs ko processing se nikaalta hai (retry ya dead-letter).
-    2) Jin jobs ka retry-wait khatam ho gaya, unhe wapas pending mein daalta hai.
-    Kitni timed-out jobs handle hui, wo number return karta hai."""
+    """1) Take timed-out jobs out of processing (retry or dead-letter).
+    2) Move jobs whose retry wait is over back to the pending queue.
+    Returns the number of timed-out jobs handled."""
     now = time.time()
 
-    # Safety: agar koi job processing list mein hai par uska timestamp nahi hai
-    # (worker uthate hi crash ho gaya), to usse abhi ka time de do.
+    # Safety net: a job in the processing list with no timestamp means the worker
+    # crashed right after taking it. Give it the current time so it can time out later.
     for raw in r.lrange(PROCESSING_LIST, 0, -1):
         r.zadd(PROCESSING_TIMES, {raw: now}, nx=True)
 
-    # Jo jobs VISIBILITY_TIMEOUT se zyada der se processing mein hain
+    # Jobs that have been processing for longer than VISIBILITY_TIMEOUT
     expired = r.zrangebyscore(PROCESSING_TIMES, 0, now - VISIBILITY_TIMEOUT)
 
     handled = 0
@@ -41,10 +41,10 @@ def reap_once(r) -> int:
             print(f"[reaper] DEAD   {job['type']} id={job['id'][:8]} (too many attempts)")
             handled += 1
 
-    # Jin jobs ka wait khatam ho gaya, unhe wapas pending mein bhejo
+    # Jobs whose retry wait is over go back to pending
     promoted = promote_due_jobs(r)
     if promoted:
-        print(f"[reaper] {promoted} job(s) ka wait khatam, wapas pending mein")
+        print(f"[reaper] {promoted} job(s) finished waiting, moved back to pending")
 
     return handled
 

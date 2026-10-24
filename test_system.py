@@ -1,11 +1,11 @@
-"""Automatic end-to-end test.
+"""Automated end-to-end failure test.
 
-Ye script khud:
-  1. Redis saaf karti hai
-  2. Jobs daalti hai (achhi + hamesha-fail hone wali)
-  3. Kai workers + reaper start karti hai (kuch workers jaan-boojh kar crash karte hain)
-  4. Crash hue workers ko wapas start karti rehti hai
-  5. Jab queue khali ho jaye to check karti hai: koi job kho to nahi gayi?
+This script:
+  1. Clears Redis
+  2. Queues jobs (normal ones plus ones that always fail)
+  3. Starts several workers and a reaper (some workers deliberately crash)
+  4. Keeps restarting crashed workers
+  5. When everything has settled, checks that no job was lost
 """
 import json
 import os
@@ -24,13 +24,13 @@ from config import (
     get_redis,
 )
 
-NUM_WORKERS = 3        # kul workers
-CRASH_WORKERS = 2      # inme se kitne crash mode mein
-CRASH_RATE = 0.15      # crash mode wale worker kitni probability se crash karein
+NUM_WORKERS = 3        # total workers
+CRASH_WORKERS = 2      # how many of them run in crash mode
+CRASH_RATE = 0.15      # probability that a crash-mode worker crashes on a job
 GOOD_JOBS = 30
-BAD_JOBS = 3           # hamesha-fail hone wali jobs
-TEST_VISIBILITY_TIMEOUT = 4   # test ke liye chhota timeout, taaki jaldi khatam ho
-MAX_WAIT = 180         # itne seconds se zyada lage to test fail
+BAD_JOBS = 3           # jobs that always fail
+TEST_VISIBILITY_TIMEOUT = 4   # short timeout so the test finishes quickly
+MAX_WAIT = 180         # fail the test if it takes longer than this many seconds
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GOOD_TYPES = ["send_email", "process_file", "resize_image"]
@@ -89,7 +89,7 @@ def main():
 
     try:
         while True:
-            # Crash hue workers ko wapas start karo
+            # Restart any worker that has crashed
             for i, p in enumerate(workers):
                 if p.poll() is not None:
                     restarts += 1
@@ -105,7 +105,7 @@ def main():
                 f"done={done} dead={dead} worker_restarts={restarts}"
             )
 
-            # Sab khali ho gaya? (2 baar lagataar check, taaki beech ka gap miss na ho)
+            # Everything empty? Require two checks in a row to avoid catching a brief gap.
             if pending == 0 and processing == 0 and delayed == 0:
                 quiet_checks += 1
                 if quiet_checks >= 2:

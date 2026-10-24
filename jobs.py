@@ -11,13 +11,13 @@ from config import (
     PROCESSING_TIMES,
 )
 
-# Ye chhote Lua scripts Redis ke andar ek saath (atomically) chalte hain.
-# Matlab beech mein koi crash ya doosra command nahi aa sakta:
-# ya to saare steps hote hain, ya koi nahi. Isse job "beech mein kho" nahi sakti.
+# These small Lua scripts run inside Redis as a single atomic step.
+# No crash or other command can interleave: either every step happens or none does.
+# This is what prevents a job from being lost halfway through a move.
 #
 # KEYS[1] = processing list, KEYS[2] = processing times, KEYS[3] = delayed set, KEYS[4] = dead queue
-# ARGV[1] = purani job (raw), ARGV[2] = nayi job (attempts +1 ke saath),
-# ARGV[3] = "retry" ya "dead", ARGV[4] = retry kab karni hai (timestamp)
+# ARGV[1] = old job (raw), ARGV[2] = new job (attempts + 1),
+# ARGV[3] = "retry" or "dead", ARGV[4] = time at which to retry (timestamp)
 _FAIL_SCRIPT = """
 local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 redis.call('ZREM', KEYS[2], ARGV[1])
@@ -32,8 +32,8 @@ end
 return 1
 """
 
-# KEYS[1] = delayed set, KEYS[2] = pending queue, ARGV[1] = abhi ka time
-# Jin jobs ka wait khatam ho gaya, unhe delayed se nikaal kar pending mein daalta hai.
+# KEYS[1] = delayed set, KEYS[2] = pending queue, ARGV[1] = current time
+# Moves jobs whose backoff wait is over from the delayed set to the pending queue.
 _PROMOTE_SCRIPT = """
 local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
 for _, raw in ipairs(due) do
@@ -45,17 +45,17 @@ return #due
 
 
 def fail_job(r, raw: str, reason: str):
-    """Fail hui job ko handle karta hai (worker aur reaper dono yahi use karte hain).
+    """Handle a failed job (used by both the worker and the reaper).
 
-    - attempts +1 karo
-    - attempts < MAX_ATTEMPTS  => delayed set mein (kuch der ruk kar retry)
-    - attempts >= MAX_ATTEMPTS => dead-letter queue
-    - processing se hatana aur nayi jagah daalna, dono ek hi atomic step mein
+    - Increment the attempt count
+    - attempts < MAX_ATTEMPTS  => move to the delayed set (retry after a wait)
+    - attempts >= MAX_ATTEMPTS => move to the dead-letter queue
+    - Removing from processing and adding to the new place happen in one atomic step
 
-    Wait ka time double hota jaata hai (exponential backoff):
-    pehli fail ke baad 2 sec, doosri ke baad 4 sec (BACKOFF_BASE = 2 par).
+    The wait doubles each time (exponential backoff):
+    2s after the first failure, 4s after the second (with BACKOFF_BASE = 2).
 
-    Return: "retry", "dead", ya None (agar job pehle hi kisi aur ne handle kar li).
+    Returns: "retry", "dead", or None (if another process already handled the job).
     """
     job = json.loads(raw)
     job["attempts"] += 1
@@ -82,6 +82,6 @@ def fail_job(r, raw: str, reason: str):
 
 
 def promote_due_jobs(r) -> int:
-    """Jin jobs ka wait khatam ho gaya, unhe pending queue mein wapas daalta hai.
-    Kitni jobs wapas gayi, wo number return karta hai."""
+    """Move jobs whose retry wait is over back to the pending queue.
+    Returns the number of jobs moved."""
     return r.eval(_PROMOTE_SCRIPT, 2, DELAYED_SET, PENDING_QUEUE, time.time())

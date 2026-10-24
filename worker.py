@@ -17,7 +17,7 @@ from jobs import fail_job
 WORKER_ID = f"worker-{os.getpid()}"
 
 
-# ---- Dummy job handlers (demo ke liye sleep se kaam simulate) ----
+# ---- Dummy job handlers (sleep to simulate real work) ----
 def send_email(payload):
     time.sleep(random.uniform(0.5, 1.5))
 
@@ -31,7 +31,7 @@ def resize_image(payload):
 
 
 def always_fail(payload):
-    """Testing ke liye: ye job hamesha fail hoti hai."""
+    """For testing: this job always fails."""
     time.sleep(0.3)
     raise RuntimeError("simulated failure")
 
@@ -56,13 +56,13 @@ def main():
     parser.add_argument(
         "--crash",
         action="store_true",
-        help="testing ke liye: 30%% jobs par worker jaan-boojh kar crash kar do",
+        help="for testing: deliberately crash the worker on some jobs",
     )
     parser.add_argument(
         "--crash-rate",
         type=float,
         default=0.3,
-        help="--crash ke saath: kitni probability se crash kare (0 se 1), default 0.3",
+        help="with --crash: probability of crashing on a job (0 to 1), default 0.3",
     )
     args = parser.parse_args()
 
@@ -73,12 +73,13 @@ def main():
 
     try:
         while True:
-            # BLMOVE = pending se job nikalo aur ATOMICALLY processing list mein daal do.
+            # BLMOVE atomically takes a job from pending and puts it in the processing list,
+            # so a job can never be lost between the two steps.
             raw = r.blmove(PENDING_QUEUE, PROCESSING_LIST, 5, src="RIGHT", dest="LEFT")
             if raw is None:
-                continue  # timeout, dobara try
+                continue  # timed out with no job, try again
 
-            # Note karo ki job kab uthayi (reaper isi se timeout check karega)
+            # Record when the job was picked up (the reaper uses this to detect timeouts)
             r.zadd(PROCESSING_TIMES, {raw: time.time()})
 
             job = json.loads(raw)
@@ -87,7 +88,7 @@ def main():
                 f"(attempt {job['attempts'] + 1}/{MAX_ATTEMPTS})"
             )
 
-            # Crash simulation: bina cleanup ke process turant band
+            # Crash simulation: exit immediately without any cleanup
             if args.crash and random.random() < args.crash_rate:
                 print(f"[{WORKER_ID}] CRASHING on id={job['id'][:8]} !!!")
                 os._exit(1)
@@ -95,7 +96,7 @@ def main():
             try:
                 handle_job(job)
             except Exception as e:
-                # Fail hui job: retry ya dead-letter queue
+                # Failed job: schedule a retry or move it to the dead-letter queue
                 result = fail_job(r, raw, str(e))
                 if result == "dead":
                     print(f"[{WORKER_ID}] DEAD   {job['type']} id={job['id'][:8]}: {e}")
@@ -103,7 +104,7 @@ def main():
                     print(f"[{WORKER_ID}] FAILED {job['type']} id={job['id'][:8]}: {e} -> retry")
                 continue
 
-            # Job complete: processing se hata do (ack)
+            # Job completed: remove it from processing (acknowledge)
             r.lrem(PROCESSING_LIST, 1, raw)
             r.zrem(PROCESSING_TIMES, raw)
             r.incr(STATS_DONE)

@@ -9,6 +9,7 @@ JOB_TYPES = ["send_email", "process_file", "resize_image"]
 
 
 def make_job(job_type: str, payload: dict) -> dict:
+    """Build a job as a plain dict."""
     return {
         "id": str(uuid.uuid4()),
         "type": job_type,
@@ -19,15 +20,15 @@ def make_job(job_type: str, payload: dict) -> dict:
 
 
 def enqueue(r, job: dict) -> None:
-    # LPUSH = left se daalo, worker right se uthayega => FIFO order
+    # LPUSH adds on the left; workers take from the right, so the order is FIFO
     r.lpush(PENDING_QUEUE, json.dumps(job))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Dummy jobs queue mein daalo")
-    parser.add_argument("--count", type=int, default=10, help="kitne normal jobs daalne hain")
+    parser = argparse.ArgumentParser(description="Push dummy jobs into the queue")
+    parser.add_argument("--count", type=int, default=10, help="number of normal jobs to add")
     parser.add_argument(
-        "--bad", type=int, default=0, help="kitni hamesha-fail hone wali jobs daalni hain (testing)"
+        "--bad", type=int, default=0, help="number of always-failing jobs to add (for testing)"
     )
     args = parser.parse_args()
 
